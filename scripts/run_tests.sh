@@ -1,4 +1,4 @@
-# !/usr/bin/env bash
+#!/usr/bin/env bash
 # ============================================================================
 # run_tests.sh — Local runner for the JMeter performance test suite
 #
