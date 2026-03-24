@@ -1,0 +1,247 @@
+name: Performance Tests
+
+on:
+  # schedule:
+  #   - cron: '0 2 * * *'       # Nightly at 02:00 UTC
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+    inputs:
+      test_suite:
+        description: 'Test suite to run (all, restful-booker, dummyjson)'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - restful-booker
+          - dummyjson
+      environment:
+        description: 'Environment for threshold evaluation'
+        required: false
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+      threads_override:
+        description: 'Override thread count (leave empty for defaults)'
+        required: false
+        default: ''
+        type: string
+
+env:
+  JMETER_VERSION: '5.6.3'
+  JMETER_HOME: ${{ github.workspace }}/apache-jmeter-5.6.3
+  JAVA_VERSION: '11'
+
+jobs:
+  performance-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # ──────────────────────────────────────────────
+      # Setup
+      # ──────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Cache JMeter installation
+        id: cache-jmeter
+        uses: actions/cache@v4
+        with:
+          path: apache-jmeter-${{ env.JMETER_VERSION }}
+          key: jmeter-${{ env.JMETER_VERSION }}
+
+      - name: Download and extract JMeter
+        if: steps.cache-jmeter.outputs.cache-hit != 'true'
+        run: |
+          echo "::group::Downloading JMeter ${JMETER_VERSION}"
+          wget -q "https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${JMETER_VERSION}.tgz"
+          tar -xzf "apache-jmeter-${JMETER_VERSION}.tgz"
+          rm -f "apache-jmeter-${JMETER_VERSION}.tgz"
+          echo "::endgroup::"
+
+      - name: Verify JMeter installation
+        run: |
+          "${JMETER_HOME}/bin/jmeter" --version
+          java -version
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install --quiet jproperties
+
+      - name: Prepare output directories
+        run: |
+          mkdir -p results
+          mkdir -p reports/restful-booker
+          mkdir -p reports/dummyjson
+
+      - name: Determine test parameters
+        id: params
+        run: |
+          SUITE="${{ github.event.inputs.test_suite || 'all' }}"
+          ENV="${{ github.event.inputs.environment || 'production' }}"
+          echo "suite=${SUITE}" >> "$GITHUB_OUTPUT"
+          echo "environment=${ENV}" >> "$GITHUB_OUTPUT"
+          echo "timestamp=$(date +%Y%m%d_%H%M%S)" >> "$GITHUB_OUTPUT"
+          echo "▸ Suite:       ${SUITE}"
+          echo "▸ Environment: ${ENV}"
+
+      # ──────────────────────────────────────────────
+      # Restful-Booker Tests
+      # ──────────────────────────────────────────────
+      - name: Run Restful-Booker — Auth test
+        if: >-
+          steps.params.outputs.suite == 'all' ||
+          steps.params.outputs.suite == 'restful-booker'
+        run: |
+          "${JMETER_HOME}/bin/jmeter" \
+            -n \
+            -t jmx/restful-booker/auth.jmx \
+            -l results/restful-booker-auth.jtl \
+            -j results/restful-booker-auth.log \
+            -Jenvironment=${{ steps.params.outputs.environment }} \
+            ${{ github.event.inputs.threads_override && format('-Jthreads={0}', github.event.inputs.threads_override) || '' }}
+        continue-on-error: true
+
+      - name: Run Restful-Booker — Booking CRUD load test
+        if: >-
+          steps.params.outputs.suite == 'all' ||
+          steps.params.outputs.suite == 'restful-booker'
+        run: |
+          "${JMETER_HOME}/bin/jmeter" \
+            -n \
+            -t jmx/restful-booker/booking.jmx \
+            -l results/restful-booker-booking.jtl \
+            -j results/restful-booker-booking.log \
+            -e -o reports/restful-booker/ \
+            -Jenvironment=${{ steps.params.outputs.environment }} \
+            ${{ github.event.inputs.threads_override && format('-Jthreads={0}', github.event.inputs.threads_override) || '' }}
+        continue-on-error: true
+
+      - name: Run Restful-Booker — Concurrent update test
+        if: >-
+          steps.params.outputs.suite == 'all' ||
+          steps.params.outputs.suite == 'restful-booker'
+        run: |
+          "${JMETER_HOME}/bin/jmeter" \
+            -n \
+            -t jmx/restful-booker/concurrent-update.jmx \
+            -l results/restful-booker-concurrent.jtl \
+            -j results/restful-booker-concurrent.log \
+            -Jenvironment=${{ steps.params.outputs.environment }}
+        continue-on-error: true
+
+      # ──────────────────────────────────────────────
+      # DummyJSON Tests
+      # ──────────────────────────────────────────────
+      - name: Run DummyJSON — Login spike test
+        if: >-
+          steps.params.outputs.suite == 'all' ||
+          steps.params.outputs.suite == 'dummyjson'
+        run: |
+          "${JMETER_HOME}/bin/jmeter" \
+            -n \
+            -t jmx/dummyjson/login.jmx \
+            -l results/dummyjson-login.jtl \
+            -j results/dummyjson-login.log \
+            -Jenvironment=${{ steps.params.outputs.environment }}
+        continue-on-error: true
+
+      - name: Run DummyJSON — Post creation load test
+        if: >-
+          steps.params.outputs.suite == 'all' ||
+          steps.params.outputs.suite == 'dummyjson'
+        run: |
+          "${JMETER_HOME}/bin/jmeter" \
+            -n \
+            -t jmx/dummyjson/post-load.jmx \
+            -l results/dummyjson-postload.jtl \
+            -j results/dummyjson-postload.log \
+            -e -o reports/dummyjson/ \
+            -Jenvironment=${{ steps.params.outputs.environment }} \
+            ${{ github.event.inputs.threads_override && format('-Jthreads={0}', github.event.inputs.threads_override) || '' }}
+        continue-on-error: true
+
+      # ──────────────────────────────────────────────
+      # Threshold Validation
+      # ──────────────────────────────────────────────
+      - name: Validate performance thresholds
+        id: thresholds
+        run: |
+          python scripts/check_thresholds.py \
+            --results results/ \
+            --config config/thresholds.properties \
+            --environment ${{ steps.params.outputs.environment }} \
+            --env-config config/environments.properties
+
+      # ──────────────────────────────────────────────
+      # Trend Analysis
+      # ──────────────────────────────────────────────
+      - name: Download previous trend data
+        uses: actions/cache@v4
+        with:
+          path: results/trend_history/
+          key: trend-data-${{ github.ref_name }}
+          restore-keys: |
+            trend-data-${{ github.ref_name }}
+            trend-data-main
+
+      - name: Run trend analysis
+        if: always()
+        run: |
+          mkdir -p results/trend_history
+          python scripts/trend_report.py \
+            --results results/ \
+            --history results/trend_history/ \
+            --build "${{ github.run_number }}" \
+            --timestamp "${{ steps.params.outputs.timestamp }}" || true
+
+      # ──────────────────────────────────────────────
+      # Artifact Upload
+      # ──────────────────────────────────────────────
+      - name: Upload HTML reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: performance-reports-${{ github.run_number }}
+          path: reports/
+          retention-days: 30
+
+      - name: Upload raw results (.jtl + logs)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: raw-results-${{ github.run_number }}
+          path: results/
+          retention-days: 30
+
+      # ──────────────────────────────────────────────
+      # Summary
+      # ──────────────────────────────────────────────
+      - name: Write job summary
+        if: always()
+        run: |
+          echo "## 🏎️ Performance Test Results — Run #${{ github.run_number }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Parameter | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Suite | \`${{ steps.params.outputs.suite }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Environment | \`${{ steps.params.outputs.environment }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Timestamp | \`${{ steps.params.outputs.timestamp }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Threshold result | \`${{ steps.thresholds.outcome }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "📦 Reports and raw JTL files are available in the **Artifacts** section above." >> "$GITHUB_STEP_SUMMARY"

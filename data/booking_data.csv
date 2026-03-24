@@ -1,0 +1,21 @@
+firstname,lastname,totalprice,depositpaid,checkin,checkout,additionalneeds
+James,Wilson,250,true,2024-06-01,2024-06-10,Breakfast
+Maria,Garcia,180,false,2024-07-15,2024-07-20,Late checkout
+Robert,Johnson,320,true,2024-08-01,2024-08-07,Extra pillows
+Linda,Martinez,150,true,2024-09-10,2024-09-15,Airport shuttle
+Michael,Brown,410,false,2024-10-01,2024-10-05,Dinner
+Jennifer,Davis,275,true,2024-11-12,2024-11-18,Gym access
+William,Rodriguez,195,false,2024-06-20,2024-06-25,Parking
+Elizabeth,Wilson,340,true,2024-07-01,2024-07-08,Spa package
+David,Anderson,160,true,2024-08-15,2024-08-20,Breakfast
+Susan,Thomas,290,false,2024-09-01,2024-09-06,Early checkin
+Richard,Taylor,225,true,2024-10-10,2024-10-16,Room service
+Jessica,Moore,380,false,2024-11-01,2024-11-07,Minibar
+Charles,Jackson,145,true,2024-06-05,2024-06-12,Breakfast
+Sarah,White,310,true,2024-07-20,2024-07-27,Pool access
+Daniel,Harris,200,false,2024-08-10,2024-08-14,Late checkout
+Karen,Martin,265,true,2024-09-25,2024-09-30,Extra towels
+Matthew,Thompson,175,true,2024-10-15,2024-10-22,Breakfast
+Nancy,Garcia,350,false,2024-11-05,2024-11-12,Airport shuttle
+Christopher,Martinez,130,true,2024-06-15,2024-06-20,Parking
+Ashley,Robinson,420,true,2024-07-10,2024-07-17,All inclusive

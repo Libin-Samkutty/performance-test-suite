@@ -1,0 +1,31 @@
+# JMeter
+
+*.log
+*.jtl
+apache-jmeter-*/
+
+# Reports (auto-generated)
+
+reports/*/
+
+# Results (raw data)
+
+results/*.jtl
+
+# Python
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+
+.DS_Store
+Thumbs.db
+
+# IDE
+
+.idea/
+.vscode/
+*.iml
