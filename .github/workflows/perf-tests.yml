@@ -179,14 +179,26 @@ jobs:
       # ──────────────────────────────────────────────
       # Threshold Validation
       # ──────────────────────────────────────────────
+      # NOTE: continue-on-error is set to true so breaches surface as warnings
+      # rather than hard failures. This is intentional for demo/public API runs
+      # where rate limiting (429) and periodic resets (403) are expected.
+      #
+      # For a real production pipeline, change continue-on-error to false (or
+      # remove it entirely) so that threshold breaches actually fail the build.
       - name: Validate performance thresholds
         id: thresholds
+        continue-on-error: true   # remove this line to enforce hard failure in production
         run: |
           python scripts/check_thresholds.py \
             --results results/ \
             --config config/thresholds.properties \
             --environment ${{ steps.params.outputs.environment }} \
             --env-config config/environments.properties
+
+      - name: Warn on threshold breach
+        if: steps.thresholds.outcome == 'failure'
+        run: |
+          echo "::warning::Performance threshold breach detected. The pipeline is configured to warn rather than fail because public demo APIs (DummyJSON, Restful-Booker) have known rate-limiting and periodic reset behaviour. For a real production target, set continue-on-error: false on the 'Validate performance thresholds' step."
 
       # ──────────────────────────────────────────────
       # Trend Analysis
@@ -205,10 +217,8 @@ jobs:
         run: |
           mkdir -p results/trend_history
           python scripts/trend_report.py \
-            --results results/ \
-            --history results/trend_history/ \
-            --build "${{ github.run_number }}" \
-            --timestamp "${{ steps.params.outputs.timestamp }}" || true
+            --current results/ \
+            --history results/trend_history/ || true
 
       # ──────────────────────────────────────────────
       # Artifact Upload
@@ -242,6 +252,10 @@ jobs:
           echo "| Suite | \`${{ steps.params.outputs.suite }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Environment | \`${{ steps.params.outputs.environment }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Timestamp | \`${{ steps.params.outputs.timestamp }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Threshold result | \`${{ steps.thresholds.outcome }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ steps.thresholds.outcome }}" == "failure" ]]; then
+            echo "| Threshold result | ⚠️ \`breach (warning only)\` |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| Threshold result | ✅ \`passed\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "📦 Reports and raw JTL files are available in the **Artifacts** section above." >> "$GITHUB_STEP_SUMMARY"

@@ -200,10 +200,8 @@ pipeline {
                 sh """
                     mkdir -p "${RESULTS_DIR}/trend_history"
                     python3 scripts/trend_report.py \
-                        --results "${RESULTS_DIR}/" \
-                        --history "${RESULTS_DIR}/trend_history/" \
-                        --build "${BUILD_NUMBER}" \
-                        --timestamp "${TIMESTAMP}" || true
+                        --current "${RESULTS_DIR}/" \
+                        --history "${RESULTS_DIR}/trend_history/" || true
                 """
             }
         }
