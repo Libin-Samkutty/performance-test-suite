@@ -38,6 +38,11 @@ pipeline {
             defaultValue: false,
             description: 'Skip threshold validation (useful for exploratory runs)'
         )
+        booleanParam(
+            name: 'ENABLE_OBSERVABILITY',
+            defaultValue: false,
+            description: 'Start InfluxDB + Grafana via docker compose and stream metrics for live dashboards'
+        )
     }
 
     environment {
@@ -48,10 +53,10 @@ pipeline {
         TIMESTAMP      = sh(script: 'date +%Y%m%d_%H%M%S', returnStdout: true).trim()
     }
 
-    triggers {
-        // Nightly at 02:00 UTC (mirrors GitHub Actions schedule)
-        cron('H 2 * * *')
-    }
+    // triggers {
+    //     // Nightly at 02:00 UTC (mirrors GitHub Actions schedule)
+    //     cron('H 2 * * *')
+    // }
 
     stages {
         // ────────────────────────────────────────────
@@ -79,6 +84,19 @@ pipeline {
         }
 
         // ────────────────────────────────────────────
+        // Observability Stack (opt-in)
+        // ────────────────────────────────────────────
+        stage('Start Observability Stack') {
+            when {
+                expression { params.ENABLE_OBSERVABILITY }
+            }
+            steps {
+                sh 'docker compose -f docker/docker-compose.yml up -d influxdb grafana'
+                sh 'bash scripts/setup_influxdb.sh'
+            }
+        }
+
+        // ────────────────────────────────────────────
         // Restful-Booker Tests
         // ────────────────────────────────────────────
         stage('Restful-Booker Tests') {
@@ -97,7 +115,8 @@ pipeline {
                                 -l "${RESULTS_DIR}/restful-booker-auth.jtl" \
                                 -j "${RESULTS_DIR}/restful-booker-auth.log" \
                                 -Jenvironment=${params.ENVIRONMENT} \
-                                ${params.THREADS_OVERRIDE ? "-Jthreads=${params.THREADS_OVERRIDE}" : ''}
+                                ${params.THREADS_OVERRIDE ? "-Jthreads=${params.THREADS_OVERRIDE}" : ''} \
+                                ${params.ENABLE_OBSERVABILITY ? '-Jinfluxdb_url=http://localhost:8086/write?db=jmeter' : ''}
                         """
                     }
                 }
@@ -113,7 +132,8 @@ pipeline {
                                 -j "${RESULTS_DIR}/restful-booker-booking.log" \
                                 -e -o "${REPORTS_DIR}/restful-booker/" \
                                 -Jenvironment=${params.ENVIRONMENT} \
-                                ${params.THREADS_OVERRIDE ? "-Jthreads=${params.THREADS_OVERRIDE}" : ''}
+                                ${params.THREADS_OVERRIDE ? "-Jthreads=${params.THREADS_OVERRIDE}" : ''} \
+                                ${params.ENABLE_OBSERVABILITY ? '-Jinfluxdb_url=http://localhost:8086/write?db=jmeter' : ''}
                         """
                     }
                 }
@@ -126,7 +146,8 @@ pipeline {
                                 -t jmx/restful-booker/concurrent-update.jmx \
                                 -l "${RESULTS_DIR}/restful-booker-concurrent.jtl" \
                                 -j "${RESULTS_DIR}/restful-booker-concurrent.log" \
-                                -Jenvironment=${params.ENVIRONMENT}
+                                -Jenvironment=${params.ENVIRONMENT} \
+                                ${params.ENABLE_OBSERVABILITY ? '-Jinfluxdb_url=http://localhost:8086/write?db=jmeter' : ''}
                         """
                     }
                 }
@@ -151,7 +172,8 @@ pipeline {
                                 -t jmx/dummyjson/login.jmx \
                                 -l "${RESULTS_DIR}/dummyjson-login.jtl" \
                                 -j "${RESULTS_DIR}/dummyjson-login.log" \
-                                -Jenvironment=${params.ENVIRONMENT}
+                                -Jenvironment=${params.ENVIRONMENT} \
+                                ${params.ENABLE_OBSERVABILITY ? '-Jinfluxdb_url=http://localhost:8086/write?db=jmeter' : ''}
                         """
                     }
                 }
@@ -167,7 +189,8 @@ pipeline {
                                 -j "${RESULTS_DIR}/dummyjson-postload.log" \
                                 -e -o "${REPORTS_DIR}/dummyjson/" \
                                 -Jenvironment=${params.ENVIRONMENT} \
-                                ${params.THREADS_OVERRIDE ? "-Jthreads=${params.THREADS_OVERRIDE}" : ''}
+                                ${params.THREADS_OVERRIDE ? "-Jthreads=${params.THREADS_OVERRIDE}" : ''} \
+                                ${params.ENABLE_OBSERVABILITY ? '-Jinfluxdb_url=http://localhost:8086/write?db=jmeter' : ''}
                         """
                     }
                 }
@@ -212,6 +235,13 @@ pipeline {
     // ────────────────────────────────────────────────
     post {
         always {
+            // Tear down the observability stack if it was started
+            script {
+                if (params.ENABLE_OBSERVABILITY) {
+                    sh 'docker compose -f docker/docker-compose.yml down -v || true'
+                }
+            }
+
             // Archive HTML reports
             publishHTML(target: [
                 reportDir:   'reports/restful-booker',

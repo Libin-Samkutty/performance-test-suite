@@ -1,0 +1,270 @@
+name: Nightly Full Observability Run
+
+# Dedicated nightly job that runs the full Docker/InfluxDB/Grafana
+# observability stack and enforces a HARD threshold gate (no
+# continue-on-error). This is intentionally separate from
+# perf-tests.yml, whose threshold step is a deliberate soft gate to
+# absorb known public-API flakiness (DummyJSON rate limiting,
+# Restful-Booker's periodic DB reset) on every push to develop. Here,
+# off-peak at 02:00 UTC, a genuine breach fails the build.
+
+on:
+  # schedule:
+  #   - cron: '0 2 * * *'       # Nightly at 02:00 UTC — matches Jenkinsfile's `H 2 * * *`
+  workflow_dispatch:
+    inputs:
+      test_suite:
+        description: 'Test suite to run (all, restful-booker, dummyjson)'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - restful-booker
+          - dummyjson
+      environment:
+        description: 'Environment for threshold evaluation'
+        required: false
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  nightly-full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # ──────────────────────────────────────────────
+      # Setup
+      # ──────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Prepare output directories
+        run: |
+          mkdir -p results
+          mkdir -p reports/restful-booker
+          mkdir -p reports/dummyjson
+
+      - name: Determine test parameters
+        id: params
+        run: |
+          SUITE="${{ github.event.inputs.test_suite || 'all' }}"
+          ENV="${{ github.event.inputs.environment || 'production' }}"
+          echo "suite=${SUITE}" >> "$GITHUB_OUTPUT"
+          echo "environment=${ENV}" >> "$GITHUB_OUTPUT"
+          echo "▸ Suite:       ${SUITE}"
+          echo "▸ Environment: ${ENV}"
+
+      # ──────────────────────────────────────────────
+      # Observability Stack
+      # ──────────────────────────────────────────────
+      - name: Start InfluxDB + Grafana + renderer
+        run: docker compose -f docker/docker-compose.yml up -d influxdb renderer grafana
+
+      - name: Create InfluxDB database + 30-day retention policy
+        run: bash scripts/setup_influxdb.sh
+
+      # ──────────────────────────────────────────────
+      # Restful-Booker Tests (via dockerized JMeter)
+      # ──────────────────────────────────────────────
+      - name: Run Restful-Booker — Auth test
+        if: >-
+          steps.params.outputs.suite == 'all' ||
+          steps.params.outputs.suite == 'restful-booker'
+        run: |
+          docker compose -f docker/docker-compose.yml run --rm jmeter \
+            -n \
+            -t /jmeter/jmx/restful-booker/auth.jmx \
+            -l /jmeter/results/restful-booker-auth.jtl \
+            -j /jmeter/results/restful-booker-auth.log \
+            -Jenvironment=${{ steps.params.outputs.environment }} \
+            -Jinfluxdb_url=http://influxdb:8086/write?db=jmeter
+        continue-on-error: true
+
+      - name: Run Restful-Booker — Booking CRUD load test
+        if: >-
+          steps.params.outputs.suite == 'all' ||
+          steps.params.outputs.suite == 'restful-booker'
+        run: |
+          docker compose -f docker/docker-compose.yml run --rm jmeter \
+            -n \
+            -t /jmeter/jmx/restful-booker/booking.jmx \
+            -l /jmeter/results/restful-booker-booking.jtl \
+            -j /jmeter/results/restful-booker-booking.log \
+            -e -o /jmeter/reports/restful-booker/ \
+            -Jenvironment=${{ steps.params.outputs.environment }} \
+            -Jinfluxdb_url=http://influxdb:8086/write?db=jmeter
+        continue-on-error: true
+
+      - name: Run Restful-Booker — Concurrent update test
+        if: >-
+          steps.params.outputs.suite == 'all' ||
+          steps.params.outputs.suite == 'restful-booker'
+        run: |
+          docker compose -f docker/docker-compose.yml run --rm jmeter \
+            -n \
+            -t /jmeter/jmx/restful-booker/concurrent-update.jmx \
+            -l /jmeter/results/restful-booker-concurrent.jtl \
+            -j /jmeter/results/restful-booker-concurrent.log \
+            -Jenvironment=${{ steps.params.outputs.environment }} \
+            -Jinfluxdb_url=http://influxdb:8086/write?db=jmeter
+        continue-on-error: true
+
+      # ──────────────────────────────────────────────
+      # DummyJSON Tests (via dockerized JMeter)
+      # ──────────────────────────────────────────────
+      - name: Run DummyJSON — Login spike test
+        if: >-
+          steps.params.outputs.suite == 'all' ||
+          steps.params.outputs.suite == 'dummyjson'
+        run: |
+          docker compose -f docker/docker-compose.yml run --rm jmeter \
+            -n \
+            -t /jmeter/jmx/dummyjson/login.jmx \
+            -l /jmeter/results/dummyjson-login.jtl \
+            -j /jmeter/results/dummyjson-login.log \
+            -Jenvironment=${{ steps.params.outputs.environment }} \
+            -Jinfluxdb_url=http://influxdb:8086/write?db=jmeter
+        continue-on-error: true
+
+      - name: Run DummyJSON — Post creation load test
+        if: >-
+          steps.params.outputs.suite == 'all' ||
+          steps.params.outputs.suite == 'dummyjson'
+        run: |
+          docker compose -f docker/docker-compose.yml run --rm jmeter \
+            -n \
+            -t /jmeter/jmx/dummyjson/post-load.jmx \
+            -l /jmeter/results/dummyjson-postload.jtl \
+            -j /jmeter/results/dummyjson-postload.log \
+            -e -o /jmeter/reports/dummyjson/ \
+            -Jenvironment=${{ steps.params.outputs.environment }} \
+            -Jinfluxdb_url=http://influxdb:8086/write?db=jmeter
+        continue-on-error: true
+
+      - name: Wait for InfluxDB to flush final writes
+        run: sleep 20
+
+      # ──────────────────────────────────────────────
+      # Threshold Validation — HARD GATE (no continue-on-error)
+      # ──────────────────────────────────────────────
+      - name: Validate performance thresholds
+        run: |
+          python scripts/check_thresholds.py \
+            --results results/ \
+            --config config/thresholds.properties \
+            --environment ${{ steps.params.outputs.environment }} \
+            --env-config config/environments.properties
+
+      # ──────────────────────────────────────────────
+      # Trend Analysis
+      # ──────────────────────────────────────────────
+      - name: Download previous trend data
+        uses: actions/cache@v4
+        with:
+          path: results/trend_history/
+          key: trend-data-nightly-full
+          restore-keys: |
+            trend-data-nightly-full
+
+      - name: Run trend analysis
+        if: always()
+        run: |
+          mkdir -p results/trend_history
+          python scripts/trend_report.py \
+            --current results/ \
+            --history results/trend_history/ || true
+
+      # ──────────────────────────────────────────────
+      # Artifact Upload
+      # ──────────────────────────────────────────────
+      - name: Upload HTML reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-full-reports-${{ github.run_number }}
+          path: reports/
+          retention-days: 30
+
+      - name: Upload raw results (.jtl + logs)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-full-results-${{ github.run_number }}
+          path: results/
+          retention-days: 30
+
+      # ──────────────────────────────────────────────
+      # Grafana Dashboard Screenshot (via grafana-image-renderer service)
+      # ──────────────────────────────────────────────
+      - name: Capture Grafana dashboard screenshot
+        if: always()
+        run: |
+          sleep 10  # let the dashboard's template variables refresh against the just-written data
+          curl -sf -u admin:admin \
+            "http://localhost:3000/render/d/jmeter-performance/apache-jmeter-dashboard?orgId=1&from=now-30d&to=now&width=1400&height=900&tz=UTC" \
+            -o reports/grafana-dashboard.png
+          file reports/grafana-dashboard.png | grep -q "PNG image data" || {
+            echo "::error::Grafana render did not return a valid PNG — image-renderer service may not be ready."
+            exit 1
+          }
+
+      # ──────────────────────────────────────────────
+      # Teardown
+      # ──────────────────────────────────────────────
+      - name: Stop observability stack
+        if: always()
+        run: docker compose -f docker/docker-compose.yml down -v || true
+
+      # ──────────────────────────────────────────────
+      # GitHub Pages — publish the dashboard screenshot
+      # ──────────────────────────────────────────────
+      - name: Prepare GitHub Pages content
+        if: always()
+        run: |
+          mkdir -p public
+          if [ -f reports/grafana-dashboard.png ]; then
+            cp reports/grafana-dashboard.png public/grafana-dashboard.png
+          fi
+          cat > public/index.html <<'EOF'
+          <!doctype html>
+          <html>
+          <head><title>JMeter Nightly Performance Dashboard</title></head>
+          <body style="font-family: sans-serif; max-width: 960px; margin: 2rem auto;">
+            <h1>JMeter Nightly Performance Dashboard</h1>
+            <p>Latest Grafana snapshot from the <code>nightly-full.yml</code> observability run — response time, throughput, and error rate trends over the last 30 days.</p>
+            <img src="grafana-dashboard.png" alt="Grafana JMeter Dashboard" style="max-width: 100%; border: 1px solid #ccc;" />
+          </body>
+          </html>
+          EOF
+
+      - uses: actions/upload-pages-artifact@v3
+        if: always()
+        with:
+          path: public
+
+  publish-dashboard:
+    needs: nightly-full
+    if: always()
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -224,10 +224,8 @@ mkdir -p "${TREND_HISTORY}"
 
 if [[ -n "${PYTHON_BIN:-}" ]]; then
   "${PYTHON_BIN}" "${SCRIPT_DIR}/trend_report.py" \
-    --results "${RESULTS_DIR}/" \
-    --history "${TREND_HISTORY}/" \
-    --build "local-${TIMESTAMP}" \
-    --timestamp "${TIMESTAMP}" || true
+    --current "${RESULTS_DIR}/" \
+    --history "${TREND_HISTORY}/" || true
 fi
 
 # ─── Summary ────────────────────────────────────────────────────────────────

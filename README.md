@@ -1,53 +1,72 @@
 # Performance Testing System
 
-Automated performance test suite targeting **Restful-Booker** and **DummyJSON** public APIs using Apache JMeter, with CI/CD integration, threshold gating, and build-over-build trend analysis.
+[![Performance Tests](https://github.com/Libin-Samkutty/performance-test-suite/actions/workflows/perf-tests.yml/badge.svg)](https://github.com/Libin-Samkutty/performance-test-suite/actions/workflows/perf-tests.yml)
+[![Nightly Full Observability Run](https://github.com/Libin-Samkutty/performance-test-suite/actions/workflows/nightly-full.yml/badge.svg)](https://github.com/Libin-Samkutty/performance-test-suite/actions/workflows/nightly-full.yml)
+[![Grafana Dashboard](https://img.shields.io/badge/Grafana-Dashboard-orange.svg)](https://libin-samkutty.github.io/performance-test-suite/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+Automated performance test suite targeting **Restful-Booker** and **DummyJSON** public APIs using Apache JMeter, with CI/CD integration, threshold gating, build-over-build trend analysis, and a Docker/InfluxDB/Grafana observability stack.
+
+This repo is the performance-gate layer of a broader QA portfolio: functional correctness is a minimum bar, but performance is a release requirement. JMeter runs against the same APIs a functional suite would cover, a Python threshold gate (`check_thresholds.py`) compares p90/p95/p99 response time, error rate, and throughput against `config/thresholds.properties`, and fails the build on breach. InfluxDB + Grafana add a second layer on top of the single-run gate — a trend view across the last 30 days, so a slow regression that never breaches the threshold on any one run is still visible as a rising slope.
+
+Complements [`pytest-api-automation`](https://github.com/Libin-Samkutty/pytest-api-automation) (unit/integration/contract/e2e testing, plus a lighter in-process `pytest-benchmark` micro-benchmark layer) and [`postman-newman-automation`](https://github.com/Libin-Samkutty/postman-newman-automation) (collaborative/exploratory API regression) — this is the layer that answers a question those two can't: does the system hold up under sustained concurrent load, and is a slow regression visible before it reaches users?
 
 ---
 
 ## Table of Contents
 
-- [How It Works](#how-it-works)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Project Structure](#project-structure)
-- [Quick Start](#quick-start)
-- [Test Plans](#test-plans)
-- [Threshold System](#threshold-system)
-- [Trend Analysis](#trend-analysis)
-- [CI/CD Integration](#cicd-integration)
-- [Distributed Testing](#distributed-testing)
-- [Optional: InfluxDB + Grafana](#optional-influxdb--grafana)
-- [Known Results & API Limitations](#known-results--api-limitations)
-- [Troubleshooting](#troubleshooting)
-- [Configuration Reference](#configuration-reference)
+1. [Project Overview](#project-overview)
+2. [Tech Stack](#tech-stack)
+3. [Prerequisites](#prerequisites)
+4. [Installation](#installation)
+5. [Project Structure](#project-structure)
+6. [Architecture](#architecture)
+7. [Quick Start](#quick-start)
+8. [Test Plans](#test-plans)
+9. [Threshold System](#threshold-system)
+10. [Trend Analysis](#trend-analysis)
+11. [CI/CD Integration](#cicd-integration)
+12. [Distributed Testing](#distributed-testing)
+13. [InfluxDB + Grafana Observability Stack](#influxdb--grafana-observability-stack)
+14. [Known Results & API Limitations](#known-results--api-limitations)
+15. [Troubleshooting](#troubleshooting)
+16. [Configuration Reference](#configuration-reference)
+17. [Engineering Decisions](#engineering-decisions)
+18. [License](#license)
+19. [References](#references)
 
 ---
 
-## How It Works
+## Project Overview
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        run_tests.sh                             │
-│                                                                 │
-│  1. Locate JMeter  →  2. Run JMX tests  →  3. Validate          │
-│     (auto-detect)        (all or suite)      thresholds         │
-│                               │                   │             │
-│                          results/*.jtl       check_thresholds   │
-│                          reports/*/          .py → pass/FAIL    │
-│                               │                                 │
-│                         4. Trend Analysis                       │
-│                            trend_report.py                      │
-│                            (compare vs 7-day history)           │
-└─────────────────────────────────────────────────────────────────┘
-```
+Five JMeter test plans exercise two free, public, always-available APIs at increasing levels of realism — a single-endpoint smoke load, a full CSV-parameterised CRUD lifecycle, a concurrency/race-condition stress test, and a spike test — and every run is validated against explicit SLA-style thresholds rather than eyeballed.
 
-**Step-by-step pipeline:**
+| Suite | Target | Purpose |
+|---|---|---|
+| `restful-booker/auth.jmx` | `POST /auth` | Auth endpoint load — token issuance under concurrent load |
+| `restful-booker/booking.jmx` | `/booking` CRUD | Full CSV-parameterised create → read → update → delete lifecycle |
+| `restful-booker/concurrent-update.jmx` | `PATCH /booking/{id}` | Race-condition stress test — many threads writing the same resource |
+| `dummyjson/login.jmx` | `POST /auth/login` | Spike test — sudden burst of concurrent logins |
+| `dummyjson/post-load.jmx` | `/posts` CRUD | Token-authenticated create/read/delete load |
 
-1. **`run_tests.sh`** locates JMeter, then runs each `.jmx` file headlessly with `jmeter -n`. Raw results are saved as `.jtl` CSV files in `results/`. HTML dashboard reports are generated for the two primary load tests.
+Every suite feeds the same threshold gate (`check_thresholds.py`, `config/thresholds.properties`) and the same trend analyzer (`trend_report.py`), and streams live metrics to InfluxDB/Grafana via a per-suite JMeter Backend Listener — one measurement pipeline behind five different load shapes.
 
-2. **`check_thresholds.py`** reads all `.jtl` files, computes response time percentiles and error rates, and compares them against the thresholds defined in `config/thresholds.properties`. Environment-specific overrides (staging/production) are layered on top. Any breach causes the script to **exit 1**, which fails the CI pipeline.
+---
 
-3. **`trend_report.py`** compares the current results against a rolling 7-day average from `results/trend_history/`. If any metric degrades by more than 20%, it prints a warning and exits 2 (soft warning — does not fail the pipeline by default).
+## Tech Stack
+
+| Component | Technology |
+|---|---|
+| Load Testing Tool | Apache JMeter 5.6.3 |
+| Runtime | Java 11+ (JMeter), Python 3.8+ (threshold/trend scripts — stdlib only, no third-party deps) |
+| Target APIs | [Restful-Booker](https://restful-booker.herokuapp.com/) (public demo), [DummyJSON](https://dummyjson.com) (public demo) |
+| Threshold Gate | `scripts/check_thresholds.py` — parses `.jtl`, compares against `config/thresholds.properties` + `config/environments.properties`, exits 1 on breach |
+| Trend Analysis | `scripts/trend_report.py` — rolling 7-day baseline vs. current run, exits 2 on >20% regression |
+| Time-Series Store | InfluxDB 1.8 (matches the JMeter `InfluxdbBackendListenerClient`'s v1 `/write` API) |
+| Dashboards | Grafana 10.4.0 — [JMeter Dashboard by NovaTec](https://grafana.com/grafana/dashboards/5496) (ID 5496), auto-provisioned |
+| Containerization | Docker + Docker Compose v2 (`docker compose`, not the deprecated `docker-compose` v1 binary) |
+| CI/CD | GitHub Actions (push/dispatch soft gate + nightly hard-gated full-stack run), Jenkins (declarative pipeline, opt-in observability stack) |
+| Local Runner | `scripts/run_tests.sh` (bash) — auto-discovers JMeter, drives thresholds + trend analysis in one command |
 
 ---
 
@@ -59,6 +78,7 @@ Automated performance test suite targeting **Restful-Booker** and **DummyJSON** 
 | Apache JMeter | 5.6.3 | Auto-located by `run_tests.sh`; see [Installation](#installation) |
 | Python | 3.8+ | Required for threshold validation and trend analysis |
 | bash | Any | `run_tests.sh` uses bash; Git Bash works on Windows |
+| Docker + Docker Compose v2 | Any recent | Optional — only needed for the [InfluxDB + Grafana observability stack](#influxdb--grafana-observability-stack) |
 
 ---
 
@@ -176,6 +196,10 @@ python3 --version
 chmod +x scripts/run_tests.sh
 ```
 
+### 5. (Optional) Install Docker + Docker Compose v2
+
+Only needed for the [InfluxDB + Grafana observability stack](#influxdb--grafana-observability-stack) — everything else in this repo runs without it. GitHub-hosted Actions runners ship Docker Compose v2 (the `docker compose` plugin, not the deprecated `docker-compose` v1 binary) pre-installed, so `nightly-full.yml` needs no extra setup step.
+
 ---
 
 ## Project Structure
@@ -198,15 +222,112 @@ performance-test-suite/
 ├── scripts/
 │   ├── run_tests.sh                   # Main local test runner
 │   ├── check_thresholds.py            # Threshold validation (exits 1 on breach)
-│   └── trend_report.py                # Build-over-build trend analysis (exits 2 on regression)
+│   ├── trend_report.py                # Build-over-build trend analysis (exits 2 on regression)
+│   ├── setup_influxdb.sh              # Creates InfluxDB database + 30-day retention policy
+│   └── requirements.txt               # Python deps for docker image build (stdlib-only today)
+├── docker/
+│   ├── Dockerfile                     # JMeter 5.6.3 headless runner
+│   ├── docker-compose.yml             # JMeter + InfluxDB + Grafana stack
+│   └── grafana/
+│       ├── dashboards/
+│       │   └── jmeter-dashboard.json  # NovaTec JMeter dashboard (Grafana ID 5496)
+│       └── provisioning/
+│           ├── datasources/influxdb.yml
+│           └── dashboards/dashboards.yml
 ├── reports/                           # Auto-generated JMeter HTML dashboard reports
 │   ├── restful-booker/                #   → booking.jmx HTML report
 │   └── dummyjson/                     #   → post-load.jmx HTML report
 ├── results/                           # Raw .jtl result files + .log files
 │   └── trend_history/                 # Historical .jtl files for trend comparisons
 ├── .github/workflows/
-│   └── perf-tests.yml                 # GitHub Actions workflow
-└── Jenkinsfile                        # Jenkins declarative pipeline
+│   ├── perf-tests.yml                 # Push/dispatch workflow — soft threshold gate
+│   └── nightly-full.yml               # Nightly docker-compose run — hard threshold gate
+├── Jenkinsfile                        # Jenkins declarative pipeline
+└── LICENSE                            # MIT
+```
+
+---
+
+## Architecture
+
+```
+┌───────────────────────────────────────────────────────────────────────┐
+│                       CI/CD GATES  (GitHub Actions / Jenkins)          │
+│  push/dispatch → perf-tests.yml         (soft gate, bare-metal)       │
+│  nightly 02:00  → nightly-full.yml      (HARD gate, full Docker stack)│
+│  nightly 02:00  → Jenkinsfile           (opt-in observability stack)  │
+└──────────────────────────────────┬──────────────────────────────────────┘
+                                    │ triggers
+┌────────────────────────────────────────────────────────────────────────┐
+│                         performance-test-suite                          │
+│                                                                          │
+│   run_tests.sh                                                          │
+│     1. Locate JMeter (auto-detect)                                      │
+│     2. Run each .jmx suite headlessly  ──────────────►  results/*.jtl   │
+│     3. check_thresholds.py  ──►  pass / exit 1 (breach)                 │
+│     4. trend_report.py  ──►  compare vs 7-day history, exit 2 (warn)    │
+│                                                                          │
+│   Every suite's Backend Listener streams live metrics ──────┐          │
+└───────────────────────────────────────────────────────────────┼─────────┘
+                                                                  │
+                     ┌────────────────────────────────────────────┴──────┐
+                     │        docker/docker-compose.yml (optional)       │
+                     │  ┌───────────┐   provisioned   ┌───────────────┐  │
+                     │  │ InfluxDB  │◄────────────────►│    Grafana    │  │
+                     │  │  1.8      │  datasource +    │  NovaTec       │  │
+                     │  │ 30d       │  dashboard JSON  │  dashboard     │  │
+                     │  │ retention │                  │  (ID 5496)     │  │
+                     │  └───────────┘                  └───────────────┘  │
+                     └────────────────────────────────────────────────────┘
+                                    │                        ▲
+                     targets        ▼                        │ visualises
+ ┌─────────────────────────────┐         ┌──────────────────────────────┐
+ │   Restful-Booker (public)   │         │   response time · throughput  │
+ │   restful-booker.herokuapp  │         │   · error rate, last 30 days  │
+ ├─────────────────────────────┤         └──────────────────────────────┘
+ │   DummyJSON (public)        │
+ │   dummyjson.com             │
+ └─────────────────────────────┘
+```
+
+### Component view
+
+```mermaid
+flowchart TB
+  subgraph CI["CI/CD"]
+    PT[perf-tests.yml<br/>push/dispatch, soft gate]
+    NF[nightly-full.yml<br/>nightly, HARD gate]
+    JK[Jenkinsfile<br/>nightly, opt-in stack]
+  end
+  subgraph REPO["performance-test-suite"]
+    RT[run_tests.sh]:::k
+    CT[check_thresholds.py]:::k
+    TR[trend_report.py]:::k
+    subgraph SUITES["jmx/"]
+      A[restful-booker/auth.jmx]:::t
+      B[restful-booker/booking.jmx]:::t
+      C[restful-booker/concurrent-update.jmx]:::t
+      L[dummyjson/login.jmx]:::t
+      P[dummyjson/post-load.jmx]:::t
+    end
+  end
+  subgraph STACK["docker-compose (optional)"]
+    IDB[(InfluxDB 1.8<br/>30-day retention)]:::inf
+    GRAF[Grafana<br/>NovaTec dashboard 5496]:::inf
+  end
+  RB[Restful-Booker<br/>public API]:::ext
+  DJ[DummyJSON<br/>public API]:::ext
+
+  CI --> RT
+  RT --> SUITES --> CT --> TR
+  SUITES -- BackendListener --> IDB --> GRAF
+  A & B & C --> RB
+  L & P --> DJ
+
+  classDef t fill:#e8f0fe,stroke:#4a76d4;
+  classDef k fill:#fef7e0,stroke:#d4a017;
+  classDef inf fill:#f3e8fd,stroke:#8430ce;
+  classDef ext fill:#fce8e6,stroke:#d93025;
 ```
 
 ---
@@ -343,6 +464,34 @@ python3 scripts/trend_report.py \
    - Each thread continuously `PATCH`es the same booking with a unique payload containing its thread number and timestamp
    - Each thread then `GET`s the booking to verify it is still readable
    - Assertions check that neither 500 nor 409 is returned
+
+---
+
+### Design Decisions
+
+**Token refresh strategy.** This repo already uses two different token-handling
+patterns depending on what each test plan needs: `booking.jmx` uses a
+per-thread `OnceOnlyController` (each virtual user authenticates once, for
+itself), while `concurrent-update.jmx` uses a shared **setUp Thread Group**
+that authenticates once and publishes the token as a JMeter *property* that
+every worker thread reads via a JSR223 pre-processor. Neither plan
+proactively refreshes the token mid-run — every suite here completes in
+60–300 seconds, well under any realistic token TTL, so there's nothing to
+refresh. On a longer-running soak test (15+ minutes), the pattern to add is
+a Groovy (JSR223) timer that re-authenticates on an interval — or an `If
+Controller` keyed on a 401 response — and re-publishes the shared token
+property, building directly on the setUp-Thread-Group scaffolding
+`concurrent-update.jmx` already has.
+
+**Why there's no "calibration" endpoint.** A common pattern for filtering
+infrastructure noise out of a measurement run is a fixed-cost sampler hit
+once at suite start, before real measurements begin. It isn't used here
+because it wouldn't have caught either of the two real noise sources this
+repo documents in [Known Results & API Limitations](#known-results--api-limitations):
+Restful-Booker's periodic database reset and DummyJSON's rate limiting both
+manifest **mid-run**, under sustained load — not at cold start — so a
+start-of-run calibration ping would show clean results right up until the
+same failures this repo already explains.
 
 ---
 
@@ -492,16 +641,14 @@ python3 scripts/trend_report.py \
 
 | Trigger | Condition | Default suite | Default env |
 |---------|-----------|--------------|-------------|
-| `push` | `release/**` branch | all | production |
+| `push` | `develop` branch | all | production |
 | `workflow_dispatch` | Manual (UI or API) | selectable | selectable |
-| `schedule` | Nightly 02:00 UTC | all | production |
 
-> **Note:** The nightly cron trigger is commented out in the workflow file. Uncomment the `schedule:` block to enable it:
-> ```yaml
-> on:
->   schedule:
->     - cron: '0 2 * * *'
-> ```
+> **Note:** A nightly cron trigger is commented out in this workflow file
+> (it runs bare-metal against public APIs that are known to rate-limit/reset,
+> so it's not scheduled unattended by default). The dedicated nightly job
+> with a full observability stack and a hard threshold gate is
+> [`nightly-full.yml`](#nightly-full-observability-run), below.
 
 **What the workflow does:**
 
@@ -510,7 +657,7 @@ python3 scripts/trend_report.py \
 3. Downloads and caches JMeter 5.6.3
 4. Prepares output directories
 5. Runs each test plan with `jmeter -n` (continues on individual test error)
-6. Validates thresholds with `check_thresholds.py` — **pipeline fails here on breach**
+6. Validates thresholds with `check_thresholds.py` — **soft gate**: `continue-on-error: true` is set deliberately, because these free public APIs (DummyJSON rate limiting, Restful-Booker's periodic DB reset) produce real breaches unrelated to code regressions. A breach is surfaced as a GitHub Actions warning annotation, not a failed build. See [`nightly-full.yml`](#nightly-full-observability-run) for the hard-gated equivalent.
 7. Restores the trend history cache, runs `trend_report.py`, and saves the updated cache
 8. Uploads two artifacts (retained for 30 days):
    - `performance-reports-<run#>` — HTML dashboard reports
@@ -525,6 +672,30 @@ python3 scripts/trend_report.py \
 | `environment` | `production`, `staging` | `production` |
 | `threads_override` | Any integer (leave blank for defaults) | — |
 
+### Nightly Full Observability Run
+
+**File:** [`.github/workflows/nightly-full.yml`](.github/workflows/nightly-full.yml)
+
+Distinct from `perf-tests.yml` above, this workflow runs the full Docker/
+InfluxDB/Grafana stack and enforces a **hard** threshold gate — no
+`continue-on-error`, so a genuine breach fails the build.
+
+**Triggers:** `schedule: cron '0 2 * * *'` (nightly, 02:00 UTC — matches the
+Jenkinsfile's `H 2 * * *`) + `workflow_dispatch` with the same `test_suite`/
+`environment` inputs as `perf-tests.yml`.
+
+**What it does:**
+
+1. Starts `influxdb` + `grafana` via `docker compose -f docker/docker-compose.yml up -d`
+2. Runs `scripts/setup_influxdb.sh` to create the `jmeter` database and a 30-day retention policy
+3. Runs each test plan via `docker compose run --rm jmeter ...`, with `-Jinfluxdb_url=http://influxdb:8086/write?db=jmeter` so the JMeter Backend Listener streams live metrics into InfluxDB
+4. Validates thresholds with `check_thresholds.py` — **no `continue-on-error`**: a breach fails the job
+5. Runs `trend_report.py` against a cached `results/trend_history/`
+6. Uploads `reports/` and `results/` as artifacts (30-day retention)
+7. Captures a real Grafana dashboard screenshot via the `renderer` service (`grafana-image-renderer`), failing the job if the render doesn't return a valid PNG
+8. Tears down the stack with `docker compose down -v`
+9. Publishes the screenshot to GitHub Pages (`actions/upload-pages-artifact` + a second `publish-dashboard` job running `actions/deploy-pages`) — see [InfluxDB + Grafana Observability Stack](#influxdb--grafana-observability-stack) for the live link
+
 ---
 
 ### Jenkins
@@ -536,16 +707,24 @@ python3 scripts/trend_report.py \
 - Java 11+
 - Python 3.8+ with `jproperties` installed (`pip install jproperties`)
 - JMeter 5.6.3 registered as a Custom Tool named **`JMeter-5.6.3`** in *Manage Jenkins → Global Tool Configuration*
+- Docker + Docker Compose v2 — **only required if `ENABLE_OBSERVABILITY=true`**; the default pipeline runs bare-metal JMeter with no Docker dependency
 
 **Pipeline stages:**
 
 | Stage | Description |
 |-------|-------------|
 | Setup | Prints run parameters, creates output dirs, verifies JMeter/Java/Python versions |
+| Start Observability Stack | Opt-in (`ENABLE_OBSERVABILITY=true`): `docker compose up -d influxdb grafana` + `scripts/setup_influxdb.sh` |
 | Restful-Booker Tests | Runs `auth.jmx`, `booking.jmx`, `concurrent-update.jmx` in sub-stages |
 | DummyJSON Tests | Runs `login.jmx`, `post-load.jmx` in sub-stages |
 | Validate Thresholds | Runs `check_thresholds.py` — stage **fails** on breach (skipped if `SKIP_THRESHOLDS=true`) |
 | Trend Analysis | Runs `trend_report.py` — non-blocking |
+
+When `ENABLE_OBSERVABILITY=true`, every JMeter invocation additionally
+passes `-Jinfluxdb_url=http://localhost:8086/write?db=jmeter` (bare-metal
+JMeter talking to the dockerized InfluxDB over its published port), and the
+`post { always { ... } }` block tears the stack down with
+`docker compose down -v`.
 
 **Pipeline parameters (set at build time):**
 
@@ -555,6 +734,7 @@ python3 scripts/trend_report.py \
 | `ENVIRONMENT` | Choice | `production` / `staging` |
 | `THREADS_OVERRIDE` | String | empty (uses JMX defaults) |
 | `SKIP_THRESHOLDS` | Boolean | `false` |
+| `ENABLE_OBSERVABILITY` | Boolean | `false` — starts InfluxDB + Grafana via docker compose for live dashboards |
 
 **Trigger:** Nightly at 02:00 UTC via `cron('H 2 * * *')`.
 
@@ -597,28 +777,72 @@ jmeter -n -t jmx/restful-booker/booking.jmx \
 
 ---
 
-## Optional: InfluxDB + Grafana
+## InfluxDB + Grafana Observability Stack
 
-Two test plans (`booking.jmx` and `post-load.jmx`) contain a pre-configured **InfluxDB Backend Listener** that is disabled by default. Enabling it streams live metrics to InfluxDB during the test run, which Grafana can visualise in real time.
+Every test plan has an **InfluxDB Backend Listener**, enabled by default,
+that streams live metrics to InfluxDB during the test run for Grafana to
+visualise. The `influxdbUrl` argument is parameterised —
+`${__P(influxdb_url,http://localhost:8086/write?db=jmeter)}` — so it
+defaults to the host-published port for bare-metal runs and can be
+overridden to the in-container service name (`http://influxdb:8086/...`)
+when JMeter itself runs inside `docker compose`.
 
-### Setup steps
+### Running the full stack
 
-1. **Start InfluxDB 2.x:**
-   ```bash
-   docker run -d -p 8086:8086 influxdb:2
-   ```
+```bash
+cd docker
+docker compose up -d influxdb grafana
+bash ../scripts/setup_influxdb.sh      # creates the jmeter DB + 30-day retention policy
+docker compose run --rm jmeter \
+  -n -t /jmeter/jmx/restful-booker/booking.jmx \
+  -l /jmeter/results/booking.jtl \
+  -e -o /jmeter/reports/dashboard \
+  -Jinfluxdb_url=http://influxdb:8086/write?db=jmeter
+```
 
-2. **Start Grafana:**
-   ```bash
-   docker run -d -p 3000:3000 grafana/grafana
-   ```
+Open Grafana at `http://localhost:3000` (`admin` / `admin`). The
+**JMeter Dashboard by NovaTec** (Grafana dashboard ID **5496**) is
+pre-provisioned — no manual import needed — via:
 
-3. **Enable the Backend Listener** in the `.jmx` file: open the JMX in JMeter GUI and enable the `InfluxDB Backend Listener` element (currently `enabled="false"`), then set the `influxdbUrl` parameter to point to your instance:
-   ```
-   http://<your-influxdb-host>:8086/write?db=jmeter
-   ```
+- `docker/grafana/provisioning/datasources/influxdb.yml` — auto-registers the InfluxDB datasource
+- `docker/grafana/provisioning/dashboards/dashboards.yml` — auto-loads `docker/grafana/dashboards/jmeter-dashboard.json`
 
-4. **Import the Grafana dashboard:** use Grafana dashboard ID **1152** (Apache JMeter dashboard).
+The dashboard's default time range is set to the last 30 days, matching the
+`setup_influxdb.sh` retention policy, so trend history is available at a
+glance rather than only the current run.
+
+### Live dashboard on GitHub Pages
+
+`nightly-full.yml` captures a real Grafana screenshot every run — via a
+dedicated `grafana-image-renderer` service (see [Engineering
+Decisions](#engineering-decisions) for why it's a separate service rather
+than a plugin bundled into the Grafana image) — and publishes it to
+GitHub Pages using the same `actions/upload-pages-artifact` +
+`actions/deploy-pages` flow [`pytest-api-automation`](https://github.com/Libin-Samkutty/pytest-api-automation)
+uses for its Allure report:
+
+**[→ View the latest dashboard](https://libin-samkutty.github.io/performance-test-suite/)**
+
+![Grafana JMeter Dashboard](https://libin-samkutty.github.io/performance-test-suite/grafana-dashboard.png)
+
+*(Populated after the first `nightly-full.yml` run — this is a live,
+recurring capture, not a one-time screenshot committed to the repo.)*
+
+### Running bare-metal JMeter against the dockerized stack
+
+If you'd rather run JMeter directly (as `run_tests.sh`, `perf-tests.yml`,
+and the default Jenkinsfile path all do) while still getting live
+dashboards, start just the observability containers and point at the
+published port:
+
+```bash
+cd docker && docker compose up -d influxdb grafana && bash ../scripts/setup_influxdb.sh
+cd .. && ./scripts/run_tests.sh --suite restful-booker
+# BackendListener defaults to http://localhost:8086/write?db=jmeter — no -J flag needed
+```
+
+This is exactly what Jenkins does when `ENABLE_OBSERVABILITY=true` (see
+[Jenkins](#jenkins), above).
 
 ---
 
@@ -759,6 +983,14 @@ rm -rf reports/restful-booker/*
 jmeter -n -t jmx/restful-booker/booking.jmx -l results/booking.jtl -e -o reports/restful-booker/
 ```
 
+### Grafana panels show "datasource not found" or no data
+
+Confirm `docker compose ps` shows `influxdb` as `healthy` before running any JMeter suite — the Backend Listener fails silently (logged, not a test failure) if InfluxDB isn't reachable yet. Then confirm data actually arrived:
+```bash
+curl "http://localhost:8086/query?db=jmeter" --data-urlencode 'q=SHOW MEASUREMENTS'
+```
+If `jmeter` isn't listed, re-run `bash scripts/setup_influxdb.sh` (creates the database if it's missing) and re-run the suite with `-Jinfluxdb_url=http://influxdb:8086/write?db=jmeter`.
+
 ---
 
 ## Configuration Reference
@@ -782,6 +1014,7 @@ jmeter -n -t jmx/restful-booker/booking.jmx -l results/booking.jtl -e -o reports
 | `-Jthreads` | `booking.jmx`, `auth.jmx`, `concurrent-update.jmx`, `post-load.jmx` | Overrides default thread count |
 | `-Jrampup` | `booking.jmx`, `post-load.jmx` | Overrides ramp-up period in seconds |
 | `-Jduration` | `booking.jmx`, `post-load.jmx` | Overrides test duration in seconds |
+| `-Jinfluxdb_url` | All JMX files (Backend Listener) | Overrides the InfluxDB write endpoint — host-published port for bare-metal runs, in-container service name for dockerized runs |
 
 ### `config/thresholds.properties`
 
@@ -829,3 +1062,105 @@ production.http.error.rate.max=0.5
 production.min.tps.restful_booker=15
 # ... (see file for full list)
 ```
+
+---
+
+## Engineering Decisions
+
+**Additive, not a rewrite, for CI/CD migration.** The initial build-out
+added the entire Docker/InfluxDB/Grafana stack, but deliberately left
+`perf-tests.yml` and the default Jenkinsfile path untouched rather than
+migrating them to run JMeter via `docker compose`. `perf-tests.yml`'s
+threshold step has an intentional soft gate (`continue-on-error: true`)
+because these free public APIs really do produce breaches unrelated to
+code regressions (see [Known Results](#known-results--api-limitations)) —
+adding Docker to every push-triggered run would add new failure surface
+(image builds, compose version drift) for a workflow that was never meant
+to be a hard gate. The hard gate and full observability stack live only in
+the new, dedicated `nightly-full.yml`; Jenkins got an opt-in
+`ENABLE_OBSERVABILITY` parameter instead of a rewrite, so the
+documented zero-Docker-prerequisite default pipeline still works exactly
+as before.
+
+**`docker compose`, not `docker-compose`.** GitHub-hosted Actions runners
+upgraded to Docker Compose v2 and dropped the standalone `docker-compose`
+v1 binary as of a February 2026 runner image update — every compose
+invocation in this repo (`nightly-full.yml`, Jenkinsfile, README examples)
+deliberately uses the `docker compose` (space) plugin syntax so it keeps
+working on current and future hosted runners.
+
+**BackendListener enabled by default, not opt-in.** All five JMX files ship
+with the InfluxDB Backend Listener `enabled="true"` and a parameterised
+`influxdb_url` (`${__P(influxdb_url,http://localhost:8086/write?db=jmeter)}`)
+rather than `enabled="false"` needing a manual GUI toggle. This is safe
+because `InfluxdbBackendListenerClient` sends metrics asynchronously —
+verified directly against this repo's own suites: running
+`restful-booker/auth.jmx` with no InfluxDB listening at all produced
+`ERROR o.a.j.v.b.i.HttpMetricsSender: failed to send data to influxDB
+server` in the suite log every ~5 seconds, while the actual HTTP load test
+completed normally with real samples and a correct threshold-gate result.
+Bare-metal runs pay no cost for the listener being enabled.
+
+**The NovaTec dashboard's datasource resolves itself — no JSON patching
+needed.** The downloaded dashboard JSON (Grafana ID 5496) uses a built-in
+`datasource`-type template variable (`query: "influxdb"`) rather than a
+static `${DS_INFLUXDB}` input reference, so Grafana auto-selects the single
+provisioned InfluxDB datasource by plugin type at load time — no manual
+edit of the dashboard JSON was needed to wire it up, only the time-range
+default (`now-30d` to `now`, to match the 30-day retention policy).
+
+**Grafana image rendering as its own service, not a plugin bundled into
+the Grafana image.** `GF_INSTALL_PLUGINS=grafana-image-renderer` installs
+the renderer inside the main Grafana container, but its bundled headless
+Chromium needs OS-level libraries (fonts, `libX11`, `libgtk`, …) the base
+`grafana/grafana` image doesn't ship, making that path flaky. Running
+`grafana/grafana-image-renderer` as its **own** compose service and
+pointing Grafana at it via `GF_RENDERING_SERVER_URL`/
+`GF_RENDERING_CALLBACK_URL` is Grafana's own documented production
+pattern — it isolates the heavy rendering dependency from the dashboard
+server itself, and is what makes `nightly-full.yml`'s screenshot capture
+a real `/render` call against a working renderer rather than the earlier
+"best-effort, likely to fail" placeholder.
+
+**A fixed dashboard `uid`, not an auto-generated one.** The downloaded
+NovaTec dashboard JSON ships with no `uid` field, so Grafana would assign
+a random one on every fresh provision — making the `/render/d/<uid>/...`
+URL a moving target across environments. Added an explicit
+`"uid": "jmeter-performance"` to the dashboard JSON so the render URL
+(and the GitHub Pages screenshot pipeline that depends on it) is stable.
+
+**Why the InfluxDB healthcheck's `curl` call is safe.** The compose
+healthcheck (`curl -f http://localhost:8086/ping`) depends on `curl`
+existing inside the `influxdb:1.8` image — confirmed by inspecting the
+image's actual build layers (`buildpack-deps:bullseye-curl` base +
+an explicit `apt-get install ... curl ...` layer), not assumed from the
+Dockerfile snippet in earlier drafts of this stack.
+
+**A real bug in `run_tests.sh`'s trend-analysis call, found and fixed.**
+The script was invoking `trend_report.py` with flags that don't exist
+(`--results`, `--build`, `--timestamp` instead of the real `--current`),
+silently swallowed by a trailing `|| true` — so local runs never actually
+computed a trend, they just printed nothing and moved on. Fixed to call
+`trend_report.py --current "${RESULTS_DIR}/" --history
+"${TREND_HISTORY}/"`, matching the invocation `perf-tests.yml` and the
+Jenkinsfile already used correctly. Verified by re-running the suite live
+and confirming the "Performance Trend Analysis" banner and its real
+history/lookback fields now print instead of nothing.
+
+---
+
+## License
+
+MIT License — see [LICENSE](LICENSE) for details.
+
+## References
+
+- [Apache JMeter Documentation](https://jmeter.apache.org/usermanual/index.html)
+- [JMeter InfluxDB Backend Listener](https://jmeter.apache.org/usermanual/realtime-results.html)
+- [InfluxDB 1.8 Documentation](https://docs.influxdata.com/influxdb/v1/)
+- [Grafana Documentation](https://grafana.com/docs/grafana/latest/)
+- [JMeter Dashboard by NovaTec (Grafana ID 5496)](https://grafana.com/grafana/dashboards/5496)
+- [Docker Compose Documentation](https://docs.docker.com/compose/)
+- [Restful-Booker API Documentation](https://restful-booker.herokuapp.com/apidoc/index.html)
+- [DummyJSON API Documentation](https://dummyjson.com/docs)
+- [Jenkins Declarative Pipeline Syntax](https://www.jenkins.io/doc/book/pipeline/syntax/)
