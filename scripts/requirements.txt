@@ -1,0 +1,3 @@
+# check_thresholds.py and trend_report.py use only the Python standard
+# library today. This file exists so docker/Dockerfile has a stable
+# `pip install -r` hook if a dependency is ever added — currently empty.
