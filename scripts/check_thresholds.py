@@ -245,6 +245,11 @@ def main():
         default=None,
         help="Environment name for threshold overrides (e.g., staging, production)",
     )
+    parser.add_argument(
+        "--pattern",
+        default="*.jtl",
+        help="Glob pattern (relative to --results) selecting which .jtl files to validate (default: *.jtl)",
+    )
     args = parser.parse_args()
 
     # Validate inputs
@@ -268,9 +273,9 @@ def main():
     thresholds = load_thresholds(args.config, args.env_config, args.environment)
 
     # Find and process .jtl files
-    jtl_files = sorted(results_path.glob("*.jtl"))
+    jtl_files = sorted(results_path.glob(args.pattern))
     if not jtl_files:
-        print(f"\n  WARNING: No .jtl files found in {args.results}")
+        print(f"\n  WARNING: No files matching '{args.pattern}' found in {args.results}")
         print("  Nothing to validate.")
         sys.exit(0)
 
