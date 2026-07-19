@@ -38,21 +38,37 @@
       <hashTree/>
 
       <!-- ==================== Thread Group ==================== -->
-      <!-- Spike test: 150 threads with a 3s ramp-up to simulate a sudden burst -->
+      <!-- Spike test: 40 threads with a 10s ramp-up to simulate a burst, paced by
+           the Throughput Limiter below — dummyjson.com returns 429s heavily once
+           request concurrency/rate exceeds roughly ~80 req/s, so this caps our own
+           rate rather than firing all threads near-simultaneously at max speed -->
       <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Login Spike Test" enabled="true">
         <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
         <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true">
           <intProp name="LoopController.loops">-1</intProp>
           <boolProp name="LoopController.continue_forever">false</boolProp>
         </elementProp>
-        <stringProp name="ThreadGroup.num_threads">${__P(threads,150)}</stringProp>
-        <stringProp name="ThreadGroup.ramp_time">3</stringProp>
+        <stringProp name="ThreadGroup.num_threads">${__P(threads,40)}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">10</stringProp>
         <boolProp name="ThreadGroup.scheduler">true</boolProp>
         <stringProp name="ThreadGroup.duration">30</stringProp>
         <stringProp name="ThreadGroup.delay">0</stringProp>
         <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
       </ThreadGroup>
       <hashTree>
+
+        <!-- Throughput Limiter — caps aggregate rate across both samplers to
+             ~80 req/s (4800/min), comfortably above the min.rps.dummyjson=40
+             floor but well below the burst rate that triggers 429 storms -->
+        <ConstantThroughputTimer guiclass="TestBeanGUI" testclass="ConstantThroughputTimer" testname="Throughput Limiter (80 req/s)" enabled="true">
+          <intProp name="calcMode">2</intProp>
+          <doubleProp>
+            <name>throughput</name>
+            <value>4800.0</value>
+            <savedValue>0.0</savedValue>
+          </doubleProp>
+        </ConstantThroughputTimer>
+        <hashTree/>
 
         <!-- POST /auth/login -->
         <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="POST /auth/login" enabled="true">
