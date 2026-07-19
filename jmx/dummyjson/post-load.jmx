@@ -39,9 +39,9 @@
 
       <!-- ==================== setUp Thread Group: Authenticate ==================== -->
       <SetupThreadGroup guiclass="SetupThreadGroupGui" testclass="SetupThreadGroup" testname="setUp - Authenticate" enabled="true">
-        <stringProp name="ThreadGroup.on_sample_error">stoptestnow</stringProp>
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
         <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true">
-          <intProp name="LoopController.loops">1</intProp>
+          <intProp name="LoopController.loops">3</intProp>
           <boolProp name="LoopController.continue_forever">false</boolProp>
         </elementProp>
         <stringProp name="ThreadGroup.num_threads">1</stringProp>
@@ -80,11 +80,17 @@
             <stringProp name="JSONPostProcessor.defaultValues">TOKEN_NOT_FOUND</stringProp>
           </JSONPostProcessor>
           <hashTree/>
-          <!-- Store token as JMeter property -->
+          <!-- Store token as JMeter property — only overwrite on success, so a later
+               retry that gets rate-limited doesn't clobber an earlier good token -->
           <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Store Token as Property" enabled="true">
             <stringProp name="scriptLanguage">groovy</stringProp>
-            <stringProp name="script">props.put("dummyjson_token", vars.get("accessToken"))
-log.info("DummyJSON access token stored as property")</stringProp>
+            <stringProp name="script">def token = vars.get("accessToken")
+if (token != null &amp;&amp; token != "TOKEN_NOT_FOUND") {
+    props.put("dummyjson_token", token)
+    log.info("DummyJSON access token stored as property")
+} else {
+    log.warn("DummyJSON login attempt failed or was rate-limited; retaining any previously stored token")
+}</stringProp>
             <stringProp name="cacheKey">true</stringProp>
           </JSR223PostProcessor>
           <hashTree/>
@@ -98,26 +104,44 @@ log.info("DummyJSON access token stored as property")</stringProp>
             <intProp name="Assertion.test_type">8</intProp>
           </ResponseAssertion>
           <hashTree/>
+          <!-- Backoff before a retry if this attempt was rate-limited (up to 3 attempts total) -->
+          <ConstantTimer guiclass="ConstantTimerGui" testclass="ConstantTimer" testname="Retry Backoff" enabled="true">
+            <stringProp name="ConstantTimer.delay">3000</stringProp>
+          </ConstantTimer>
+          <hashTree/>
         </hashTree>
 
       </hashTree>
       <!-- END setUp Thread Group -->
 
       <!-- ==================== Main Load Thread Group ==================== -->
-      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Post Creation Load Test - 200 Threads" enabled="true">
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Post Creation Load Test - 40 Threads" enabled="true">
         <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
         <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true">
           <intProp name="LoopController.loops">-1</intProp>
           <boolProp name="LoopController.continue_forever">false</boolProp>
         </elementProp>
-        <stringProp name="ThreadGroup.num_threads">${__P(threads,100)}</stringProp>
-        <stringProp name="ThreadGroup.ramp_time">${__P(rampup,15)}</stringProp>
+        <stringProp name="ThreadGroup.num_threads">${__P(threads,40)}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">${__P(rampup,20)}</stringProp>
         <boolProp name="ThreadGroup.scheduler">true</boolProp>
         <stringProp name="ThreadGroup.duration">${__P(duration,150)}</stringProp>
         <stringProp name="ThreadGroup.delay">0</stringProp>
         <boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp>
       </ThreadGroup>
       <hashTree>
+
+        <!-- Throughput Limiter — caps aggregate rate across this group's samplers to
+             ~80 req/s (4800/min), comfortably above the min.rps.dummyjson=40
+             floor but well below the burst rate that triggers 429 storms -->
+        <ConstantThroughputTimer guiclass="TestBeanGUI" testclass="ConstantThroughputTimer" testname="Throughput Limiter (80 req/s)" enabled="true">
+          <intProp name="calcMode">2</intProp>
+          <doubleProp>
+            <name>throughput</name>
+            <value>4800.0</value>
+            <savedValue>0.0</savedValue>
+          </doubleProp>
+        </ConstantThroughputTimer>
+        <hashTree/>
 
         <!-- Load shared token into thread-local variable -->
         <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Load Token from Property" enabled="true">

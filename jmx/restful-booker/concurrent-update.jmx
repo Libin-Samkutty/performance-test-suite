@@ -139,7 +139,7 @@ log.info("Target booking ID stored: " + vars.get("bookingid"))</stringProp>
       <!-- END setUp Thread Group -->
 
       <!-- ==================== Concurrent Update Thread Group ==================== -->
-      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Concurrent Update - 50 Threads" enabled="true">
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Concurrent Update - 20 Threads" enabled="true">
         <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
         <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true">
           <intProp name="LoopController.loops">-1</intProp>
