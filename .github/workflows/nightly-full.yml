@@ -215,15 +215,20 @@ jobs:
         if: always()
         run: |
           for attempt in 1 2 3 4 5 6; do
-            curl -sf -u admin:admin \
-              "http://localhost:3000/render/d/jmeter-performance/apache-jmeter-dashboard?orgId=1&from=now-30d&to=now&width=1400&height=900&tz=UTC" \
-              -o reports/grafana-dashboard.png && \
-            file reports/grafana-dashboard.png | grep -q "PNG image data" && break
-            echo "Attempt ${attempt}: renderer not ready yet, retrying in 10s..."
+            http_code=$(curl -s -u admin:admin -o reports/grafana-dashboard.png -w "%{http_code}" \
+              "http://localhost:3000/render/d/jmeter-performance/apache-jmeter-dashboard?orgId=1&from=now-30d&to=now&width=1400&height=900&tz=UTC")
+            if [ "${http_code}" = "200" ] && file reports/grafana-dashboard.png | grep -q "PNG image data"; then
+              echo "Attempt ${attempt}: got a valid PNG (HTTP ${http_code})"
+              break
+            fi
+            echo "Attempt ${attempt}: HTTP ${http_code} — response body was:"
+            head -c 1000 reports/grafana-dashboard.png 2>/dev/null || true
+            echo
+            echo "Retrying in 10s..."
             sleep 10
           done
           file reports/grafana-dashboard.png 2>/dev/null | grep -q "PNG image data" || {
-            echo "::error::Grafana render did not return a valid PNG after 6 attempts — image-renderer service may not be ready."
+            echo "::error::Grafana render did not return a valid PNG after 6 attempts — see the HTTP status/response body logged above for the actual cause."
             exit 1
           }
 
