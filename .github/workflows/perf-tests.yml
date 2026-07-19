@@ -3,9 +3,6 @@ name: Performance Tests
 on:
   # schedule:
   #   - cron: '0 2 * * *'       # Nightly at 02:00 UTC
-  push:
-    branches:
-      - develop
   workflow_dispatch:
     inputs:
       test_suite:

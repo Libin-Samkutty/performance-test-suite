@@ -20,8 +20,14 @@ services:
   # inside the grafana container — that keeps the heavy headless-Chromium
   # dependency isolated from the main Grafana image, matching Grafana's
   # own documented production recommendation.
+  #
+  # Pinned (not :latest) — the image-renderer went through a major rewrite
+  # (v5) and dropped plugin support, with recent builds tested against much
+  # newer Grafana majors than the 10.4.0 pinned below. Floating on :latest
+  # caused /render/d/... to silently return a PDF instead of a PNG. v4.1.5
+  # is the last v4.x release, contemporaneous with Grafana 10.x.
   renderer:
-    image: grafana/grafana-image-renderer:latest
+    image: grafana/grafana-image-renderer:v4.1.5
     ports:
       - "8081:8081"
     networks: [jmeter-net]
