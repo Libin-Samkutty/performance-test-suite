@@ -214,12 +214,16 @@ jobs:
       - name: Capture Grafana dashboard screenshot
         if: always()
         run: |
-          sleep 10  # let the dashboard's template variables refresh against the just-written data
-          curl -sf -u admin:admin \
-            "http://localhost:3000/render/d/jmeter-performance/apache-jmeter-dashboard?orgId=1&from=now-30d&to=now&width=1400&height=900&tz=UTC" \
-            -o reports/grafana-dashboard.png
-          file reports/grafana-dashboard.png | grep -q "PNG image data" || {
-            echo "::error::Grafana render did not return a valid PNG — image-renderer service may not be ready."
+          for attempt in 1 2 3 4 5 6; do
+            curl -sf -u admin:admin \
+              "http://localhost:3000/render/d/jmeter-performance/apache-jmeter-dashboard?orgId=1&from=now-30d&to=now&width=1400&height=900&tz=UTC" \
+              -o reports/grafana-dashboard.png && \
+            file reports/grafana-dashboard.png | grep -q "PNG image data" && break
+            echo "Attempt ${attempt}: renderer not ready yet, retrying in 10s..."
+            sleep 10
+          done
+          file reports/grafana-dashboard.png 2>/dev/null | grep -q "PNG image data" || {
+            echo "::error::Grafana render did not return a valid PNG after 6 attempts — image-renderer service may not be ready."
             exit 1
           }
 
